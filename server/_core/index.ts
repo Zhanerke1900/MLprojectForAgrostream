@@ -4,13 +4,15 @@ import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { analyzeAgronomicYield } from "../agronomicYieldForecast";
+import { ensureDatabaseReady } from "../db";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { validateRuntimeEnv } from "./env";
 import { registerOAuthRoutes } from "./oauth";
 import { serveStatic, setupVite } from "./vite";
 
 function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const server = net.createServer();
     server.listen(port, () => {
       server.close(() => resolve(true));
@@ -40,6 +42,9 @@ function getLocalUrlPort(urlValue: string | undefined): number | null {
 }
 
 async function startServer() {
+  validateRuntimeEnv();
+  await ensureDatabaseReady();
+
   const app: Express = express();
   const server = createServer(app);
 
@@ -53,6 +58,9 @@ async function startServer() {
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      onError({ error, path, type }) {
+        console.error(`[tRPC] ${type} ${path ?? "<unknown>"} failed:`, error);
+      },
     })
   );
 
@@ -122,4 +130,7 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+startServer().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

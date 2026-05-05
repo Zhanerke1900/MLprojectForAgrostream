@@ -16,3 +16,19 @@ export const ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
 };
+
+export function validateRuntimeEnv() {
+  const missing: string[] = [];
+
+  if (ENV.isProduction && !process.env.JWT_SECRET) {
+    missing.push("JWT_SECRET");
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required production environment variable(s): ${missing.join(
+        ", "
+      )}. Set them in Railway variables and redeploy.`
+    );
+  }
+}

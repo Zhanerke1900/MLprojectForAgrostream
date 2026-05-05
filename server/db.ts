@@ -1,9 +1,11 @@
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import { migrate } from "drizzle-orm/mysql2/migrator";
 import { type InsertUser, type User, users } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _dbReady: Promise<void> | null = null;
 let memoryUserId = 1;
 const memoryUsers = new Map<string, User>();
 
@@ -57,6 +59,37 @@ export async function getDb() {
   return _db;
 }
 
+export async function ensureDatabaseReady() {
+  if (!process.env.DATABASE_URL) {
+    console.warn(
+      "[Database] DATABASE_URL is not configured; using in-memory auth storage."
+    );
+    return;
+  }
+
+  if (_dbReady) {
+    return _dbReady;
+  }
+
+  _dbReady = (async () => {
+    const db = await getDb();
+
+    if (!db) {
+      throw new Error("Database is not available.");
+    }
+
+    console.log("[Database] Applying pending migrations...");
+    await migrate(db, { migrationsFolder: "drizzle" });
+    console.log("[Database] Migrations are up to date.");
+  })().catch(error => {
+    _dbReady = null;
+    console.error("[Database] Failed to apply migrations:", error);
+    throw error;
+  });
+
+  return _dbReady;
+}
+
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
@@ -101,8 +134,8 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       values.role = user.role;
       updateSet.role = user.role;
     } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
+      values.role = "admin";
+      updateSet.role = "admin";
     }
 
     if (!values.lastSignedIn) {
@@ -129,7 +162,11 @@ export async function getUserByOpenId(openId: string) {
     return user ? cloneUser(user) : undefined;
   }
 
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.openId, openId))
+    .limit(1);
 
   return result.length > 0 ? result[0] : undefined;
 }
@@ -141,7 +178,11 @@ export async function getUserByEmail(email: string) {
     return user ? cloneUser(user) : undefined;
   }
 
-  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
 
   return result.length > 0 ? result[0] : undefined;
 }

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import { type InsertUser, type User, users } from "../drizzle/schema";
@@ -8,6 +8,13 @@ let _db: ReturnType<typeof drizzle> | null = null;
 let _dbReady: Promise<void> | null = null;
 let memoryUserId = 1;
 const memoryUsers = new Map<string, User>();
+
+type SqlError = {
+  code?: string;
+  errno?: number;
+  message?: string;
+  cause?: unknown;
+};
 
 function cloneUser(user: User) {
   return { ...user };
@@ -46,6 +53,72 @@ function createMemoryUser(input: {
   return cloneUser(user);
 }
 
+function errorMatches(error: unknown, codes: string[], errnos: number[]) {
+  let current: unknown = error;
+
+  while (current && typeof current === "object") {
+    const sqlError = current as SqlError;
+
+    if (sqlError.code && codes.includes(sqlError.code)) return true;
+    if (sqlError.errno && errnos.includes(sqlError.errno)) return true;
+    if (sqlError.message) {
+      const message = sqlError.message.toLowerCase();
+      if (codes.some(code => message.includes(code.toLowerCase()))) {
+        return true;
+      }
+    }
+
+    current = sqlError.cause;
+  }
+
+  return false;
+}
+
+function isDuplicateTableError(error: unknown) {
+  return errorMatches(error, ["ER_TABLE_EXISTS_ERROR"], [1050]);
+}
+
+async function columnExists(
+  db: NonNullable<typeof _db>,
+  tableName: string,
+  columnName: string
+) {
+  const [rows] = (await db.execute(
+    sql.raw(`SHOW COLUMNS FROM \`${tableName}\` LIKE '${columnName}'`)
+  )) as unknown as [unknown[], unknown];
+
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+async function ensureColumn(
+  db: NonNullable<typeof _db>,
+  tableName: string,
+  columnName: string,
+  definition: string
+) {
+  if (await columnExists(db, tableName, columnName)) {
+    return;
+  }
+
+  try {
+    const statement = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`;
+    await db.execute(sql.raw(statement));
+    console.log(`[Database] Added ${tableName}.${columnName} column.`);
+  } catch (error) {
+    if (errorMatches(error, ["ER_DUP_FIELDNAME"], [1060])) {
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function ensurePasswordAuthColumns(db: NonNullable<typeof _db>) {
+  await ensureColumn(db, "users", "passwordHash", "varchar(255)");
+  await ensureColumn(db, "users", "passwordResetTokenHash", "varchar(128)");
+  await ensureColumn(db, "users", "passwordResetExpiresAt", "timestamp");
+}
+
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -79,7 +152,18 @@ export async function ensureDatabaseReady() {
     }
 
     console.log("[Database] Applying pending migrations...");
-    await migrate(db, { migrationsFolder: "drizzle" });
+    try {
+      await migrate(db, { migrationsFolder: "drizzle" });
+    } catch (error) {
+      if (!isDuplicateTableError(error)) {
+        throw error;
+      }
+
+      console.warn(
+        "[Database] Existing tables found without a complete migration journal; continuing with schema repair."
+      );
+    }
+    await ensurePasswordAuthColumns(db);
     console.log("[Database] Migrations are up to date.");
   })().catch(error => {
     _dbReady = null;

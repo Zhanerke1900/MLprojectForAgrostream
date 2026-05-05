@@ -292,9 +292,12 @@ class SDKServer {
       throw ForbiddenError("User not found");
     }
 
+    user = await db.ensureConfiguredAdminRole(user);
+
     await db.upsertUser({
       openId: user.openId,
       lastSignedIn: signedInAt,
+      role: user.role,
     });
 
     return user;

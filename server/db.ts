@@ -24,12 +24,32 @@ function findMemoryUserByEmail(email: string) {
   return Array.from(memoryUsers.values()).find(user => user.email === email);
 }
 
+function normalizeEmailForAdmin(value: string | null | undefined) {
+  const email = value?.trim().replace(/^["']|["']$/g, "").toLowerCase() ?? "";
+
+  if (email === "zhanerke1900gmail.com") {
+    return "zhanerke1900@gmail.com";
+  }
+
+  return email;
+}
+
+function isConfiguredAdminUser(user: Pick<User, "openId" | "email">) {
+  return (
+    user.openId === ENV.ownerOpenId ||
+    normalizeEmailForAdmin(user.email) === normalizeEmailForAdmin(ENV.adminEmail)
+  );
+}
+
 function createMemoryUser(input: {
   openId: string;
   email?: string | null;
   name?: string | null;
   loginMethod?: string | null;
   passwordHash?: string | null;
+  emailVerifiedAt?: Date | null;
+  emailVerificationTokenHash?: string | null;
+  emailVerificationExpiresAt?: Date | null;
   role?: User["role"];
   lastSignedIn?: Date;
 }) {
@@ -50,11 +70,27 @@ function createMemoryUser(input: {
         : existing?.passwordHash ?? null,
     passwordResetTokenHash: existing?.passwordResetTokenHash ?? null,
     passwordResetExpiresAt: existing?.passwordResetExpiresAt ?? null,
+    emailVerifiedAt:
+      input.emailVerifiedAt !== undefined
+        ? input.emailVerifiedAt
+        : existing?.emailVerifiedAt ?? null,
+    emailVerificationTokenHash:
+      input.emailVerificationTokenHash !== undefined
+        ? input.emailVerificationTokenHash
+        : existing?.emailVerificationTokenHash ?? null,
+    emailVerificationExpiresAt:
+      input.emailVerificationExpiresAt !== undefined
+        ? input.emailVerificationExpiresAt
+        : existing?.emailVerificationExpiresAt ?? null,
     role: input.role ?? existing?.role ?? "user",
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     lastSignedIn: input.lastSignedIn ?? existing?.lastSignedIn ?? now,
   };
+
+  if (isConfiguredAdminUser(user)) {
+    user.role = "admin";
+  }
 
   memoryUsers.set(input.openId, user);
   return cloneUser(user);
@@ -124,6 +160,9 @@ async function ensurePasswordAuthColumns(db: NonNullable<typeof _db>) {
   await ensureColumn(db, "users", "passwordHash", "varchar(255)");
   await ensureColumn(db, "users", "passwordResetTokenHash", "varchar(128)");
   await ensureColumn(db, "users", "passwordResetExpiresAt", "timestamp");
+  await ensureColumn(db, "users", "emailVerifiedAt", "timestamp");
+  await ensureColumn(db, "users", "emailVerificationTokenHash", "varchar(128)");
+  await ensureColumn(db, "users", "emailVerificationExpiresAt", "timestamp");
 }
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
@@ -207,6 +246,15 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     } else if (user.openId === ENV.ownerOpenId) {
       memoryInput.role = "admin";
     }
+    if (user.emailVerifiedAt !== undefined) {
+      memoryInput.emailVerifiedAt = user.emailVerifiedAt ?? null;
+    }
+    if (user.emailVerificationTokenHash !== undefined) {
+      memoryInput.emailVerificationTokenHash = user.emailVerificationTokenHash ?? null;
+    }
+    if (user.emailVerificationExpiresAt !== undefined) {
+      memoryInput.emailVerificationExpiresAt = user.emailVerificationExpiresAt ?? null;
+    }
 
     createMemoryUser(memoryInput);
     return;
@@ -238,9 +286,24 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     if (user.role !== undefined) {
       values.role = user.role;
       updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
+    } else if (
+      user.openId === ENV.ownerOpenId ||
+      normalizeEmailForAdmin(user.email) === normalizeEmailForAdmin(ENV.adminEmail)
+    ) {
       values.role = "admin";
       updateSet.role = "admin";
+    }
+    if (user.emailVerifiedAt !== undefined) {
+      values.emailVerifiedAt = user.emailVerifiedAt;
+      updateSet.emailVerifiedAt = user.emailVerifiedAt;
+    }
+    if (user.emailVerificationTokenHash !== undefined) {
+      values.emailVerificationTokenHash = user.emailVerificationTokenHash;
+      updateSet.emailVerificationTokenHash = user.emailVerificationTokenHash;
+    }
+    if (user.emailVerificationExpiresAt !== undefined) {
+      values.emailVerificationExpiresAt = user.emailVerificationExpiresAt;
+      updateSet.emailVerificationExpiresAt = user.emailVerificationExpiresAt;
     }
 
     if (!values.lastSignedIn) {
@@ -292,12 +355,43 @@ export async function getUserByEmail(email: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function ensureConfiguredAdminRole(user: User) {
+  if (!isConfiguredAdminUser(user) || user.role === "admin") {
+    return user;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    const current = memoryUsers.get(user.openId);
+    if (current) {
+      const updated = {
+        ...current,
+        role: "admin" as const,
+        updatedAt: new Date(),
+      };
+      memoryUsers.set(user.openId, updated);
+      return cloneUser(updated);
+    }
+
+    return { ...user, role: "admin" as const };
+  }
+
+  await db.update(users).set({ role: "admin" }).where(eq(users.openId, user.openId));
+
+  return {
+    ...user,
+    role: "admin" as const,
+    updatedAt: new Date(),
+  };
+}
+
 export async function createPasswordUser(input: {
   openId: string;
   email: string;
   name: string | null;
   passwordHash: string;
   role: User["role"];
+  emailVerifiedAt?: Date | null;
 }) {
   const db = await getDb();
   if (!db) {
@@ -308,6 +402,7 @@ export async function createPasswordUser(input: {
       loginMethod: "password",
       passwordHash: input.passwordHash,
       role: input.role,
+      emailVerifiedAt: input.emailVerifiedAt ?? null,
     });
   }
 
@@ -318,6 +413,7 @@ export async function createPasswordUser(input: {
     loginMethod: "password",
     passwordHash: input.passwordHash,
     role: input.role,
+    emailVerifiedAt: input.emailVerifiedAt ?? null,
     lastSignedIn: new Date(),
   });
 
@@ -329,6 +425,7 @@ export async function setPasswordAuth(
   input: {
     passwordHash: string;
     role?: User["role"];
+    emailVerifiedAt?: Date | null;
   }
 ) {
   const db = await getDb();
@@ -341,6 +438,8 @@ export async function setPasswordAuth(
       passwordHash: input.passwordHash,
       loginMethod: "password",
       role: input.role ?? user.role,
+      emailVerifiedAt:
+        input.emailVerifiedAt !== undefined ? input.emailVerifiedAt : user.emailVerifiedAt,
       updatedAt: new Date(),
     });
     return;
@@ -352,6 +451,64 @@ export async function setPasswordAuth(
       passwordHash: input.passwordHash,
       loginMethod: "password",
       ...(input.role ? { role: input.role } : {}),
+      ...(input.emailVerifiedAt !== undefined
+        ? { emailVerifiedAt: input.emailVerifiedAt }
+        : {}),
+    })
+    .where(eq(users.openId, openId));
+}
+
+export async function setEmailVerificationToken(
+  openId: string,
+  tokenHash: string,
+  expiresAt: Date
+) {
+  const db = await getDb();
+  if (!db) {
+    const user = memoryUsers.get(openId);
+    if (!user) return;
+
+    memoryUsers.set(openId, {
+      ...user,
+      emailVerificationTokenHash: tokenHash,
+      emailVerificationExpiresAt: expiresAt,
+      updatedAt: new Date(),
+    });
+    return;
+  }
+
+  await db
+    .update(users)
+    .set({
+      emailVerificationTokenHash: tokenHash,
+      emailVerificationExpiresAt: expiresAt,
+    })
+    .where(eq(users.openId, openId));
+}
+
+export async function markEmailVerified(openId: string) {
+  const verifiedAt = new Date();
+  const db = await getDb();
+  if (!db) {
+    const user = memoryUsers.get(openId);
+    if (!user) return;
+
+    memoryUsers.set(openId, {
+      ...user,
+      emailVerifiedAt: verifiedAt,
+      emailVerificationTokenHash: null,
+      emailVerificationExpiresAt: null,
+      updatedAt: verifiedAt,
+    });
+    return;
+  }
+
+  await db
+    .update(users)
+    .set({
+      emailVerifiedAt: verifiedAt,
+      emailVerificationTokenHash: null,
+      emailVerificationExpiresAt: null,
     })
     .where(eq(users.openId, openId));
 }
@@ -441,6 +598,24 @@ export async function getUserByPasswordResetTokenHash(tokenHash: string) {
     .select()
     .from(users)
     .where(eq(users.passwordResetTokenHash, tokenHash))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserByEmailVerificationTokenHash(tokenHash: string) {
+  const db = await getDb();
+  if (!db) {
+    const user = Array.from(memoryUsers.values()).find(
+      item => item.emailVerificationTokenHash === tokenHash
+    );
+    return user ? cloneUser(user) : undefined;
+  }
+
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.emailVerificationTokenHash, tokenHash))
     .limit(1);
 
   return result.length > 0 ? result[0] : undefined;

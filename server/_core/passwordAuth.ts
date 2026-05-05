@@ -39,14 +39,30 @@ export async function verifyPassword(password: string, storedHash: string | null
 }
 
 export function createPasswordResetToken() {
+  return createSecureToken();
+}
+
+export function hashPasswordResetToken(token: string) {
+  return hashSecureToken(token);
+}
+
+export function createEmailVerificationToken() {
+  return createSecureToken();
+}
+
+export function hashEmailVerificationToken(token: string) {
+  return hashSecureToken(token);
+}
+
+function createSecureToken() {
   const token = toBase64Url(randomBytes(32));
 
   return {
     token,
-    tokenHash: hashPasswordResetToken(token),
+    tokenHash: hashSecureToken(token),
   };
 }
 
-export function hashPasswordResetToken(token: string) {
+function hashSecureToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }

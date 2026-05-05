@@ -5,9 +5,11 @@ import { z } from "zod";
 import { contactRequests, forecastCalculations, type User } from "../drizzle/schema";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
-import { sendPasswordResetEmail } from "./_core/gmail";
+import { sendEmailVerificationEmail, sendPasswordResetEmail } from "./_core/gmail";
 import {
+  createEmailVerificationToken,
   createPasswordResetToken,
+  hashEmailVerificationToken,
   hashPassword,
   hashPasswordResetToken,
   verifyPassword,
@@ -18,11 +20,15 @@ import { adminProcedure, publicProcedure, router } from "./_core/trpc";
 import {
   clearPasswordResetToken,
   createPasswordUser,
+  ensureConfiguredAdminRole,
   getDb,
   getUserByEmail,
+  getUserByEmailVerificationTokenHash,
   getUserByOpenId,
   getUserByPasswordResetTokenHash,
+  markEmailVerified,
   markUserSignedIn,
+  setEmailVerificationToken,
   setPasswordAuth,
   setPasswordResetToken,
 } from "./db";
@@ -75,12 +81,14 @@ const passwordInput = z.string().min(8).max(128);
 const loginInput = z.object({
   email: emailInput,
   password: z.string().min(1).max(128),
+  language: z.enum(["ru", "en"]).default("ru"),
 });
 
 const registerInput = z.object({
   name: z.string().trim().max(255).optional(),
   email: emailInput,
   password: passwordInput,
+  language: z.enum(["ru", "en"]).default("ru"),
 });
 
 const forgotPasswordInput = z.object({
@@ -91,6 +99,10 @@ const forgotPasswordInput = z.object({
 const resetPasswordInput = z.object({
   token: z.string().trim().min(20).max(256),
   password: passwordInput,
+});
+
+const verifyEmailInput = z.object({
+  token: z.string().trim().min(20).max(256),
 });
 
 const materialInput = z.object({
@@ -129,6 +141,8 @@ const forecastCalculationInput = z.object({
   result: forecastResultInput,
 });
 
+const EMAIL_VERIFICATION_TTL_MS = 1000 * 60 * 60 * 24;
+
 async function requireDb() {
   const db = await getDb();
 
@@ -144,7 +158,16 @@ async function requireDb() {
 
 type PublicUser = Pick<
   User,
-  "id" | "openId" | "name" | "email" | "loginMethod" | "role" | "createdAt" | "updatedAt" | "lastSignedIn"
+  | "id"
+  | "openId"
+  | "name"
+  | "email"
+  | "loginMethod"
+  | "emailVerifiedAt"
+  | "role"
+  | "createdAt"
+  | "updatedAt"
+  | "lastSignedIn"
 >;
 
 function toPublicUser(user: User): PublicUser {
@@ -154,6 +177,7 @@ function toPublicUser(user: User): PublicUser {
     name: user.name,
     email: user.email,
     loginMethod: user.loginMethod,
+    emailVerifiedAt: user.emailVerifiedAt,
     role: user.role,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -162,7 +186,14 @@ function toPublicUser(user: User): PublicUser {
 }
 
 function adminEmail() {
-  return normalizeEmailInput(ENV.adminEmail || "zhanerke1900@gmail.com");
+  const value = (ENV.adminEmail || "zhanerke1900@gmail.com")
+    .trim()
+    .replace(/^["']|["']$/g, "");
+  return normalizeEmailInput(value);
+}
+
+function adminPassword() {
+  return (ENV.adminPassword || "12345678").trim().replace(/^["']|["']$/g, "");
 }
 
 function isBootstrapAdminEmail(email: string) {
@@ -190,9 +221,45 @@ function getRequestOrigin(req: Parameters<typeof getSessionCookieOptions>[0]) {
   return `${protocol}://${host}`;
 }
 
+async function sendVerificationEmail(
+  ctx: { req: Parameters<typeof getSessionCookieOptions>[0] },
+  user: User,
+  language: "ru" | "en"
+) {
+  if (!user.email) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "User does not have an email address.",
+    });
+  }
+
+  const { token, tokenHash } = createEmailVerificationToken();
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+  await setEmailVerificationToken(user.openId, tokenHash, expiresAt);
+
+  const verifyUrl = `${getRequestOrigin(ctx.req)}/verify-email?token=${encodeURIComponent(token)}`;
+
+  try {
+    await sendEmailVerificationEmail({
+      to: user.email,
+      verifyUrl,
+      language,
+    });
+  } catch (error) {
+    console.error("[Auth] Failed to send email verification:", error);
+    throw new TRPCError({
+      code: "SERVICE_UNAVAILABLE",
+      message: "Could not send verification email. Check Gmail API settings.",
+    });
+  }
+}
+
 async function signInUser(ctx: { req: Parameters<typeof getSessionCookieOptions>[0]; res: any }, user: User) {
-  await markUserSignedIn(user.openId);
-  const freshUser = (await getUserByOpenId(user.openId)) ?? user;
+  const adminAwareUser = await ensureConfiguredAdminRole(user);
+  await markUserSignedIn(adminAwareUser.openId);
+  const freshUser = await ensureConfiguredAdminRole(
+    (await getUserByOpenId(adminAwareUser.openId)) ?? adminAwareUser
+  );
   const sessionToken = await sdk.createSessionToken(freshUser.openId, {
     name: freshUser.name || freshUser.email || "User",
   });
@@ -216,7 +283,7 @@ export const appRouter = router({
     me: publicProcedure.query(opts => (opts.ctx.user ? toPublicUser(opts.ctx.user) : null)),
     register: publicProcedure.input(registerInput).mutation(async ({ ctx, input }) => {
       const existingUser = await getUserByEmail(input.email);
-      if (existingUser?.passwordHash) {
+      if (existingUser?.passwordHash && existingUser.emailVerifiedAt) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "User with this email already exists.",
@@ -248,11 +315,17 @@ export const appRouter = router({
         });
       }
 
-      return signInUser(ctx, user);
+      await sendVerificationEmail(ctx, user, input.language);
+
+      return {
+        success: true,
+        requiresEmailVerification: true,
+        email: input.email,
+      } as const;
     }),
     login: publicProcedure.input(loginInput).mutation(async ({ ctx, input }) => {
-      const isAdminBootstrap =
-        isBootstrapAdminEmail(input.email) && input.password === ENV.adminPassword;
+      const isAdminEmail = isBootstrapAdminEmail(input.email);
+      const isAdminBootstrap = isAdminEmail && input.password === adminPassword();
       let user = await getUserByEmail(input.email);
 
       if (!user && isAdminBootstrap) {
@@ -262,6 +335,7 @@ export const appRouter = router({
           name: "Zhanerke",
           passwordHash: await hashPassword(input.password),
           role: "admin",
+          emailVerifiedAt: new Date(),
         });
       }
 
@@ -274,8 +348,9 @@ export const appRouter = router({
 
       if (isAdminBootstrap) {
         await setPasswordAuth(user.openId, {
-          passwordHash: await hashPassword(ENV.adminPassword),
+          passwordHash: await hashPassword(adminPassword()),
           role: "admin",
+          emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
         });
         user = (await getUserByOpenId(user.openId)) ?? user;
       } else {
@@ -287,10 +362,39 @@ export const appRouter = router({
             message: "Invalid email or password.",
           });
         }
+
+        if (!isAdminBootstrap && !user.emailVerifiedAt) {
+          await sendVerificationEmail(ctx, user, input.language);
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Email is not verified. Check your inbox for a verification link.",
+          });
+        }
       }
 
       return signInUser(ctx, user);
     }),
+    verifyEmail: publicProcedure
+      .input(verifyEmailInput)
+      .mutation(async ({ ctx, input }) => {
+        const tokenHash = hashEmailVerificationToken(input.token);
+        const user = await getUserByEmailVerificationTokenHash(tokenHash);
+        const expiresAt = user?.emailVerificationExpiresAt
+          ? new Date(user.emailVerificationExpiresAt)
+          : null;
+
+        if (!user || !expiresAt || expiresAt.getTime() < Date.now()) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Email verification link is invalid or expired.",
+          });
+        }
+
+        await markEmailVerified(user.openId);
+        const freshUser = (await getUserByOpenId(user.openId)) ?? user;
+
+        return signInUser(ctx, freshUser);
+      }),
     forgotPassword: publicProcedure
       .input(forgotPasswordInput)
       .mutation(async ({ ctx, input }) => {
@@ -340,6 +444,7 @@ export const appRouter = router({
         await setPasswordAuth(user.openId, {
           passwordHash: await hashPassword(input.password),
           role: isBootstrapAdminEmail(user.email ?? "") ? "admin" : user.role,
+          emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
         });
         await clearPasswordResetToken(user.openId);
 

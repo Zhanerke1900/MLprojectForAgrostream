@@ -12,6 +12,7 @@ import Contact from "./pages/Contact";
 import Admin from "./pages/Admin";
 import Auth from "./pages/Auth";
 import ResetPassword from "./pages/ResetPassword";
+import VerifyEmail from "./pages/VerifyEmail";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -22,6 +23,7 @@ function Router() {
       <Route path={"/about"} component={About} />
       <Route path={"/contact"} component={Contact} />
       <Route path={"/auth"} component={Auth} />
+      <Route path={"/verify-email"} component={VerifyEmail} />
       <Route path={"/reset-password"} component={ResetPassword} />
       <Route path={"/admin"} component={Admin} />
       <Route path={"/404"} component={NotFound} />

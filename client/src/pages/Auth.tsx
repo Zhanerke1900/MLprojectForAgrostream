@@ -75,6 +75,8 @@ const authCopy: Record<Language, any> = {
     messages: {
       loginError: "Could not sign in. Check email and password.",
       registerError: "Could not create account.",
+      registerSuccess: "Verification email sent. Open the link in your inbox to sign in.",
+      verifyRequired: "Email is not verified yet. We sent a new verification link to your inbox.",
       forgotSuccess: "If the account exists, a reset email has been sent.",
       forgotError: "Could not send email. Check Gmail API settings.",
     },
@@ -129,9 +131,20 @@ export default function Auth() {
     setError(null);
 
     try {
-      const result = await loginMutation.mutateAsync(loginForm);
+      const result = await loginMutation.mutateAsync({ ...loginForm, language });
       await finishAuth(result);
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("Email is not verified")) {
+        setMessage(
+          language === "ru"
+            ? "Email пока не подтвержден. Мы отправили новую ссылку на почту."
+            : t.messages.verifyRequired ??
+                "Email is not verified yet. We sent a new verification link to your inbox."
+        );
+        return;
+      }
+
       setError(t.messages.loginError);
     }
   }
@@ -142,8 +155,14 @@ export default function Auth() {
     setError(null);
 
     try {
-      const result = await registerMutation.mutateAsync(registerForm);
-      await finishAuth(result);
+      await registerMutation.mutateAsync({ ...registerForm, language });
+      setRegisterForm({ name: "", email: "", password: "" });
+      setMessage(
+        language === "ru"
+          ? "Письмо для подтверждения отправлено. Откройте ссылку из письма, чтобы войти."
+          : t.messages.registerSuccess ??
+              "Verification email sent. Open the link in your inbox to sign in."
+      );
     } catch {
       setError(t.messages.registerError);
     }

@@ -29,6 +29,13 @@
       "when": 1778010000000,
       "tag": "0003_auth_password_reset",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1778023600000,
+      "tag": "0004_email_verification",
+      "breakpoints": true
     }
   ]
 }

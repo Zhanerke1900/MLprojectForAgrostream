@@ -14,6 +14,12 @@ type PasswordResetEmailInput = {
   language: "ru" | "en";
 };
 
+type EmailVerificationInput = {
+  to: string;
+  verifyUrl: string;
+  language: "ru" | "en";
+};
+
 function toBase64Url(value: string) {
   return Buffer.from(value, "utf8")
     .toString("base64")
@@ -152,6 +158,32 @@ export async function sendPasswordResetEmail({
     language === "ru"
       ? `<p>Чтобы сменить пароль, откройте ссылку:</p><p><a href="${escapeHtml(resetUrl)}">${escapeHtml(resetUrl)}</a></p><p>Если вы не запрашивали сброс, просто проигнорируйте это письмо.</p>`
       : `<p>Open this link to reset your password:</p><p><a href="${escapeHtml(resetUrl)}">${escapeHtml(resetUrl)}</a></p><p>If you did not request this, you can ignore this email.</p>`;
+
+  await sendGmailEmail({
+    to,
+    subject,
+    text,
+    html,
+  });
+}
+
+export async function sendEmailVerificationEmail({
+  to,
+  verifyUrl,
+  language,
+}: EmailVerificationInput) {
+  const subject =
+    language === "ru"
+      ? "Подтвердите email для Crop Forecast"
+      : "Confirm your Crop Forecast email";
+  const text =
+    language === "ru"
+      ? `Подтвердите email, открыв ссылку: ${verifyUrl}\n\nЕсли вы не создавали аккаунт, просто проигнорируйте это письмо.`
+      : `Confirm your email by opening this link: ${verifyUrl}\n\nIf you did not create an account, you can ignore this email.`;
+  const html =
+    language === "ru"
+      ? `<p>Подтвердите email, открыв ссылку:</p><p><a href="${escapeHtml(verifyUrl)}">${escapeHtml(verifyUrl)}</a></p><p>Если вы не создавали аккаунт, просто проигнорируйте это письмо.</p>`
+      : `<p>Confirm your email by opening this link:</p><p><a href="${escapeHtml(verifyUrl)}">${escapeHtml(verifyUrl)}</a></p><p>If you did not create an account, you can ignore this email.</p>`;
 
   await sendGmailEmail({
     to,

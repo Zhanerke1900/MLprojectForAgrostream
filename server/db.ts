@@ -26,27 +26,34 @@ function findMemoryUserByEmail(email: string) {
 
 function createMemoryUser(input: {
   openId: string;
-  email: string | null;
-  name: string | null;
-  loginMethod: string | null;
+  email?: string | null;
+  name?: string | null;
+  loginMethod?: string | null;
   passwordHash?: string | null;
   role?: User["role"];
+  lastSignedIn?: Date;
 }) {
   const now = new Date();
   const existing = memoryUsers.get(input.openId);
   const user: User = {
     id: existing?.id ?? memoryUserId++,
     openId: input.openId,
-    name: input.name,
-    email: input.email,
-    loginMethod: input.loginMethod,
-    passwordHash: input.passwordHash ?? null,
-    passwordResetTokenHash: null,
-    passwordResetExpiresAt: null,
-    role: input.role ?? "user",
+    name: input.name !== undefined ? input.name : existing?.name ?? null,
+    email: input.email !== undefined ? input.email : existing?.email ?? null,
+    loginMethod:
+      input.loginMethod !== undefined
+        ? input.loginMethod
+        : existing?.loginMethod ?? null,
+    passwordHash:
+      input.passwordHash !== undefined
+        ? input.passwordHash
+        : existing?.passwordHash ?? null,
+    passwordResetTokenHash: existing?.passwordResetTokenHash ?? null,
+    passwordResetExpiresAt: existing?.passwordResetExpiresAt ?? null,
+    role: input.role ?? existing?.role ?? "user",
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-    lastSignedIn: now,
+    lastSignedIn: input.lastSignedIn ?? existing?.lastSignedIn ?? now,
   };
 
   memoryUsers.set(input.openId, user);
@@ -181,13 +188,27 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
   const db = await getDb();
   if (!db) {
-    createMemoryUser({
+    const memoryInput: Parameters<typeof createMemoryUser>[0] = {
       openId: user.openId,
-      email: user.email ?? null,
-      name: user.name ?? null,
-      loginMethod: user.loginMethod ?? null,
-      role: user.role ?? (user.openId === ENV.ownerOpenId ? "admin" : "user"),
-    });
+      lastSignedIn: user.lastSignedIn ?? new Date(),
+    };
+
+    if (user.email !== undefined) {
+      memoryInput.email = user.email ?? null;
+    }
+    if (user.name !== undefined) {
+      memoryInput.name = user.name ?? null;
+    }
+    if (user.loginMethod !== undefined) {
+      memoryInput.loginMethod = user.loginMethod ?? null;
+    }
+    if (user.role !== undefined) {
+      memoryInput.role = user.role;
+    } else if (user.openId === ENV.ownerOpenId) {
+      memoryInput.role = "admin";
+    }
+
+    createMemoryUser(memoryInput);
     return;
   }
 

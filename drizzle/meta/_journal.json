@@ -8,6 +8,27 @@
       "when": 1763186359313,
       "tag": "0000_unique_true_believers",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1778005666075,
+      "tag": "0001_happy_lady_bullseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1778008443940,
+      "tag": "0002_slippery_molten_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1778010000000,
+      "tag": "0003_auth_password_reset",
+      "breakpoints": true
     }
   ]
 }

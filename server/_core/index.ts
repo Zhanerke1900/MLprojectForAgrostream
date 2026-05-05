@@ -1,16 +1,14 @@
-// server/_core/index.ts
 import "dotenv/config";
-import express, { type Express } from "express";
+import express, { type Express, type Request, type Response } from "express";
 import { createServer } from "http";
 import net from "net";
-import axios from "axios";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
+import { analyzeAgronomicYield } from "../agronomicYieldForecast";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { registerOAuthRoutes } from "./oauth";
 import { serveStatic, setupVite } from "./vite";
 
-/* ---------- Проверка свободного порта ---------- */
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -28,7 +26,19 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-/* ---------- СТАРТ СЕРВЕРА ---------- */
+function getLocalUrlPort(urlValue: string | undefined): number | null {
+  if (!urlValue) return null;
+
+  try {
+    const parsed = new URL(urlValue);
+    if (!["localhost", "127.0.0.1"].includes(parsed.hostname)) return null;
+    if (parsed.port) return parseInt(parsed.port, 10);
+    return parsed.protocol === "https:" ? 443 : 80;
+  } catch {
+    return null;
+  }
+}
+
 async function startServer() {
   const app: Express = express();
   const server = createServer(app);
@@ -36,10 +46,8 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  /* ---------- OAuth ---------- */
   registerOAuthRoutes(app);
 
-  /* ---------- tRPC ---------- */
   app.use(
     "/api/trpc",
     createExpressMiddleware({
@@ -47,31 +55,34 @@ async function startServer() {
       createContext,
     })
   );
-app.post("/api/predict", async (req, res) => {
-  try {
-    const { temp, humidity, precip } = req.body;
 
-    console.log("Frontend → Server received:", req.body);
+  app.post("/api/agronomic-predict", async (req: Request, res: Response) => {
+    try {
+      const result = await analyzeAgronomicYield({
+        crop: String(req.body.crop ?? ""),
+        variety: String(req.body.variety ?? ""),
+        predecessor: String(req.body.predecessor ?? ""),
+        area: String(req.body.area ?? ""),
+        sowingDate: String(req.body.sowingDate ?? ""),
+        harvestDate: String(req.body.harvestDate ?? ""),
+        set: String(req.body.set ?? ""),
+        precipitation: String(req.body.precipitation ?? ""),
+        humus: String(req.body.humus ?? ""),
+        language: req.body.language === "en" ? "en" : "ru",
+      });
 
-    // ⬇⬇⬇ ГЛАВНАЯ СТРОКА — НОВАЯ ⬇⬇⬇
-    const ML_API_URL = process.env.ML_API_URL || "http://127.0.0.1:8000";
+      return res.json(result);
+    } catch (error: unknown) {
+      console.error("Agronomic prediction error:", error);
+      return res.status(500).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Agronomic prediction failed",
+      });
+    }
+  });
 
-    const response = await axios.post(`${ML_API_URL}/predict`, {
-      temp,
-      humidity,
-      precip,
-    });
-
-    return res.json(response.data);
-  } catch (error: any) {
-    console.error("Prediction error:", error.message);
-    return res.status(500).json({ error: "Prediction failed" });
-  }
-});
-
-
-
-  /* ---------- Vite frontend ---------- */
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
   } else {
@@ -86,7 +97,28 @@ app.post("/api/predict", async (req, res) => {
   }
 
   server.listen(port, () => {
-    console.log(`🚀 Server running at http://localhost:${port}/`);
+    const appUrl = `http://localhost:${port}/`;
+    console.log(`Server running at ${appUrl}`);
+    console.log(`Open this URL in your browser: ${appUrl}`);
+
+    if (process.env.NODE_ENV === "development") {
+      const oAuthServerPort = getLocalUrlPort(process.env.OAUTH_SERVER_URL);
+      const oAuthPortalPort = getLocalUrlPort(
+        process.env.VITE_OAUTH_PORTAL_URL
+      );
+
+      if (oAuthServerPort && oAuthServerPort !== port) {
+        console.warn(
+          `[Dev warning] OAUTH_SERVER_URL uses port ${oAuthServerPort}, but the app is running on ${port}.`
+        );
+      }
+
+      if (oAuthPortalPort && oAuthPortalPort !== port) {
+        console.warn(
+          `[Dev warning] VITE_OAUTH_PORTAL_URL uses port ${oAuthPortalPort}, but the app is running on ${port}.`
+        );
+      }
+    }
   });
 }
 

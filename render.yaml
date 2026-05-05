@@ -1,19 +1,8 @@
 services:
   - type: web
-    name: crop-ml-api
-    env: python
-    rootDir: .
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "./start.sh"
-    plan: free
-
-  - type: web
     name: crop-frontend-backend
     env: node
     rootDir: .
     buildCommand: "npm install && npm run build"
-    startCommand: "node server/index.js"
+    startCommand: "npm run start"
     plan: free
-    envVars:
-      - key: ML_API_URL
-        value: https://crop-ml-api.onrender.com

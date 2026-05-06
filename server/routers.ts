@@ -5,6 +5,7 @@ import { z } from "zod";
 import { contactRequests, forecastCalculations, type User } from "../drizzle/schema";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
+import { isAdminEmail } from "./_core/admin";
 import { sendEmailVerificationEmail, sendPasswordResetEmail } from "./_core/gmail";
 import {
   createEmailVerificationToken,
@@ -185,19 +186,12 @@ function toPublicUser(user: User): PublicUser {
   };
 }
 
-function adminEmail() {
-  const value = (ENV.adminEmail || "zhanerke1900@gmail.com")
-    .trim()
-    .replace(/^["']|["']$/g, "");
-  return normalizeEmailInput(value);
-}
-
 function adminPassword() {
   return (ENV.adminPassword || "12345678").trim().replace(/^["']|["']$/g, "");
 }
 
 function isBootstrapAdminEmail(email: string) {
-  return email === adminEmail();
+  return isAdminEmail(email);
 }
 
 function getPasswordUserOpenId(email: string) {

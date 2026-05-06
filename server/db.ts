@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import { type InsertUser, type User, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { isAdminEmail } from "./_core/admin";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _dbReady: Promise<void> | null = null;
@@ -37,7 +38,7 @@ function normalizeEmailForAdmin(value: string | null | undefined) {
 function isConfiguredAdminUser(user: Pick<User, "openId" | "email">) {
   return (
     user.openId === ENV.ownerOpenId ||
-    normalizeEmailForAdmin(user.email) === normalizeEmailForAdmin(ENV.adminEmail)
+    isAdminEmail(user.email)
   );
 }
 
@@ -288,7 +289,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       updateSet.role = user.role;
     } else if (
       user.openId === ENV.ownerOpenId ||
-      normalizeEmailForAdmin(user.email) === normalizeEmailForAdmin(ENV.adminEmail)
+      isAdminEmail(user.email)
     ) {
       values.role = "admin";
       updateSet.role = "admin";
